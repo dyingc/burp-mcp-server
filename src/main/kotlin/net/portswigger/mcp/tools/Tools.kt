@@ -8,7 +8,14 @@ import burp.api.montoya.core.BurpSuiteEdition
 import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpService
 import burp.api.montoya.http.message.HttpHeader
+import burp.api.montoya.http.message.HttpRequestResponse
 import burp.api.montoya.http.message.requests.HttpRequest
+import burp.api.montoya.http.message.responses.HttpResponse
+import burp.api.montoya.logging.Logging
+import burp.api.montoya.scanner.AuditConfiguration
+import burp.api.montoya.scanner.BuiltInAuditConfiguration
+import burp.api.montoya.scanner.CrawlConfiguration
+import burp.api.montoya.scanner.audit.Audit
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
@@ -21,6 +28,83 @@ import net.portswigger.mcp.security.HttpRequestSecurity
 import java.awt.KeyboardFocusManager
 import java.util.regex.Pattern
 import javax.swing.JTextArea
+
+private data class FocusedAuditTarget(
+    val uri: java.net.URI,
+    val host: String,
+    val port: Int,
+    val usesHttps: Boolean,
+)
+
+private fun parseFocusedAuditTarget(targetUrl: String): FocusedAuditTarget {
+    val uri = java.net.URI(targetUrl)
+    val scheme = uri.scheme?.lowercase() ?: throw IllegalArgumentException("targetUrl must include a scheme")
+    val host = uri.host ?: throw IllegalArgumentException("targetUrl must include a host")
+    val usesHttps = when (scheme) {
+        "https" -> true
+        "http" -> false
+        else -> throw IllegalArgumentException("targetUrl scheme must be http or https")
+    }
+    val port = if (uri.port != -1) uri.port else if (usesHttps) 443 else 80
+    return FocusedAuditTarget(uri, host, port, usesHttps)
+}
+
+private fun validateFocusedAuditRequest(target: FocusedAuditTarget, request: String) {
+    if (request.isBlank()) {
+        throw IllegalArgumentException("request must not be blank")
+    }
+
+    val lines = request.replace("\r\n", "\n").split('\n')
+    if (lines.isEmpty() || lines.first().isBlank()) {
+        throw IllegalArgumentException("request must include a request line")
+    }
+
+    val hostHeader = lines
+        .drop(1)
+        .takeWhile { it.isNotEmpty() }
+        .firstOrNull { it.startsWith("Host:", ignoreCase = true) }
+        ?.substringAfter(':')
+        ?.trim()
+
+    if (hostHeader != null) {
+        val requestHost = hostHeader.substringBefore(':').trim()
+        if (!requestHost.equals(target.host, ignoreCase = true)) {
+            throw IllegalArgumentException("request host must match targetUrl host")
+        }
+    }
+}
+
+internal fun addMatchingResponsesToAudit(
+    audit: Audit,
+    requestResponses: List<HttpRequestResponse>,
+    targetHost: String,
+    seen: MutableSet<String>,
+    logging: Logging,
+) {
+    requestResponses.forEach { requestResponse ->
+        if (requestResponse.response() == null) {
+            logging.logToOutput("MCP start_active_audit: skipping site map item without response")
+            return@forEach
+        }
+
+        val request = requestResponse.request()
+        val url = request.url()
+        val method = request.method()
+
+        try {
+            val requestUri = java.net.URI(url)
+            if (requestUri.host.equals(targetHost, ignoreCase = true)) {
+                val dedupKey = "$method:$url"
+                if (seen.add(dedupKey)) {
+                    audit.addRequestResponse(requestResponse)
+                    logging.logToOutput("MCP start_active_audit: added site map item to audit: $url")
+                }
+            }
+        } catch (_: Exception) {
+            // Skip malformed URLs
+        }
+    }
+}
 
 private suspend fun checkHistoryPermissionOrDeny(
     accessType: HistoryAccessType, config: McpConfig, api: MontoyaApi, logMessage: String
@@ -161,6 +245,9 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     val toolingDisabledMessage =
         "User has disabled configuration editing. They can enable it in the MCP tab in Burp by selecting 'Enable tools that can edit your config'"
 
+    val activeScanDisabledMessage =
+        "User has disabled active scan tooling. They can enable it in the MCP tab in Burp by selecting 'Enable tools that can start active scans'"
+
     mcpTool<SetProjectOptions>("Sets project-level configuration in JSON format. This will be merged with existing configuration. Make sure to export before doing this, so you know what the schema is. Make sure the JSON has a top level 'user_options' object!") {
         if (config.configEditingTooling) {
             api.logging().logToOutput("Setting project-level configuration: $json")
@@ -228,6 +315,91 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
                     Json.encodeToString(it.toSerializableForm())
                 }
             }
+        }
+
+        mcpTool<StartActiveAudit>(
+            "Starts a Burp active scan (crawl + audit) for the target URL. " +
+            "Use get_scanner_issues to retrieve findings."
+        ) {
+            if (!config.allowActiveScanTooling) {
+                return@mcpTool activeScanDisabledMessage
+            }
+
+            api.logging().logToOutput("MCP start_active_audit: starting active audit for $targetUrl")
+            api.scope().includeInScope(targetUrl)
+
+            val targetHost = java.net.URI(targetUrl).host
+
+            val crawlConfig = CrawlConfiguration.crawlConfiguration(targetUrl)
+            val crawl = api.scanner().startCrawl(crawlConfig)
+            api.logging().logToOutput("MCP start_active_audit: crawl started for $targetUrl")
+
+            val auditConfig = AuditConfiguration.auditConfiguration(
+                BuiltInAuditConfiguration.LEGACY_ACTIVE_AUDIT_CHECKS
+            )
+            val audit = api.scanner().startAudit(auditConfig)
+            api.logging().logToOutput("MCP start_active_audit: audit started for $targetUrl")
+            audit.addRequest(HttpRequest.httpRequestFromUrl(targetUrl))
+            api.logging().logToOutput("MCP start_active_audit: added initial audit request for $targetUrl")
+
+            val seen = mutableSetOf<String>()
+            val pollIntervalMs = 2000L
+            val maxIterations = scanDurationSeconds * 1000 / pollIntervalMs
+
+            Thread {
+                repeat(maxIterations.toInt()) {
+                    try {
+                        Thread.sleep(pollIntervalMs)
+                        addMatchingResponsesToAudit(
+                            audit = audit,
+                            requestResponses = api.siteMap().requestResponses(),
+                            targetHost = targetHost,
+                            seen = seen,
+                            logging = api.logging(),
+                        )
+                    } catch (_: Exception) {
+                    }
+                }
+                api.logging().logToOutput("MCP start_active_audit: scan duration reached ($scanDurationSeconds seconds)")
+            }.apply { isDaemon = true }.start()
+
+            "Active scan started for $targetUrl. Use get_scanner_issues to retrieve findings."
+        }
+
+        mcpTool<StartActiveAuditForRequest>(
+            "Starts a focused Burp active audit for a specific HTTP request. " +
+            "Use get_scanner_issues to retrieve findings."
+        ) {
+            if (!config.allowActiveScanTooling) {
+                return@mcpTool activeScanDisabledMessage
+            }
+
+            val target = parseFocusedAuditTarget(targetUrl)
+            validateFocusedAuditRequest(target, request)
+            api.logging().logToOutput("MCP start_active_audit_for_request: starting focused audit for $targetUrl")
+            api.scope().includeInScope(targetUrl)
+
+            val auditConfig = AuditConfiguration.auditConfiguration(
+                BuiltInAuditConfiguration.LEGACY_ACTIVE_AUDIT_CHECKS
+            )
+            val audit = api.scanner().startAudit(auditConfig)
+            api.logging().logToOutput("MCP start_active_audit_for_request: audit started for $targetUrl")
+
+            val service = HttpService.httpService(target.host, target.port, target.usesHttps)
+            val fixedRequest = request.replace("\r", "").replace("\n", "\r\n")
+            val httpRequest = HttpRequest.httpRequest(service, fixedRequest)
+
+            if (response != null) {
+                val httpResponse = HttpResponse.httpResponse(response)
+                val requestResponse = HttpRequestResponse.httpRequestResponse(httpRequest, httpResponse)
+                audit.addRequestResponse(requestResponse)
+                api.logging().logToOutput("MCP start_active_audit_for_request: injected request-response for $targetUrl")
+            } else {
+                audit.addRequest(httpRequest)
+                api.logging().logToOutput("MCP start_active_audit_for_request: injected request for $targetUrl")
+            }
+
+            "Focused active audit started for $targetUrl. Use get_scanner_issues to retrieve findings."
         }
     }
 
@@ -426,4 +598,17 @@ data class GenerateCollaboratorPayload(
 @Serializable
 data class GetCollaboratorInteractions(
     val payloadId: String? = null
+)
+
+@Serializable
+data class StartActiveAudit(
+    val targetUrl: String,
+    val scanDurationSeconds: Int = 300
+)
+
+@Serializable
+data class StartActiveAuditForRequest(
+    val targetUrl: String,
+    val request: String,
+    val response: String? = null
 )
