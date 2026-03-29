@@ -55,14 +55,6 @@ class ServerConfigurationPanel(
         add(configEditingToolingCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
-        val activeScanToolingCheckBox = createCheckBoxWithSubtitle(
-            "Enable tools that can start active scans",
-            "WARNING: Can send requests to target hosts",
-            config.allowActiveScanTooling
-        ) { config.allowActiveScanTooling = it }
-        add(activeScanToolingCheckBox)
-        add(createVerticalStrut(Design.Spacing.MD))
-
         val httpRequestApprovalCheckBox = createStandardCheckBox(
             "Require approval for HTTP requests", config.requireHttpRequestApproval
         ) { config.requireHttpRequestApproval = it }

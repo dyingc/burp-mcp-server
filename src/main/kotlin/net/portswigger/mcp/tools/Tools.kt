@@ -245,9 +245,6 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     val toolingDisabledMessage =
         "User has disabled configuration editing. They can enable it in the MCP tab in Burp by selecting 'Enable tools that can edit your config'"
 
-    val activeScanDisabledMessage =
-        "User has disabled active scan tooling. They can enable it in the MCP tab in Burp by selecting 'Enable tools that can start active scans'"
-
     mcpTool<SetProjectOptions>("Sets project-level configuration in JSON format. This will be merged with existing configuration. Make sure to export before doing this, so you know what the schema is. Make sure the JSON has a top level 'user_options' object!") {
         if (config.configEditingTooling) {
             api.logging().logToOutput("Setting project-level configuration: $json")
@@ -324,14 +321,21 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             "Returns an auditId that can be used with stop_active_audit. " +
             "Use get_scanner_issues to retrieve findings."
         ) {
-            if (!config.allowActiveScanTooling) {
-                return@mcpTool activeScanDisabledMessage
+            val target = parseFocusedAuditTarget(targetUrl)
+            val allowed = runBlocking {
+                HttpRequestSecurity.checkAuditPermission(
+                    target.host, target.port, config, api
+                )
+            }
+            if (!allowed) {
+                api.logging().logToOutput("MCP start_active_audit denied for $targetUrl")
+                return@mcpTool "Active scan denied for $targetUrl. Approve the target in the consent dialog or add it to Auto-Approved HTTP Targets."
             }
 
             api.logging().logToOutput("MCP start_active_audit: starting active audit for $targetUrl")
             api.scope().includeInScope(targetUrl)
 
-            val targetHost = java.net.URI(targetUrl).host
+            val targetHost = target.host
 
             val crawlConfig = CrawlConfiguration.crawlConfiguration(targetUrl)
             val crawl = api.scanner().startCrawl(crawlConfig)
@@ -364,7 +368,8 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
                     } catch (_: InterruptedException) {
                         Thread.currentThread().interrupt()
                         return@Thread
-                    } catch (_: Exception) {
+                    } catch (e: Exception) {
+                        api.logging().logToOutput("MCP start_active_audit: polling error: ${e.message}")
                     }
                 }
                 api.logging().logToOutput("MCP start_active_audit: scan duration reached ($scanDurationSeconds seconds)")
@@ -382,12 +387,18 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             "Returns an auditId that can be used with stop_active_audit. " +
             "Use get_scanner_issues to retrieve findings."
         ) {
-            if (!config.allowActiveScanTooling) {
-                return@mcpTool activeScanDisabledMessage
-            }
-
             val target = parseFocusedAuditTarget(targetUrl)
             validateFocusedAuditRequest(target, request)
+            val allowed = runBlocking {
+                HttpRequestSecurity.checkAuditPermission(
+                    target.host, target.port, config, api
+                )
+            }
+            if (!allowed) {
+                api.logging().logToOutput("MCP start_active_audit_for_request denied for $targetUrl")
+                return@mcpTool "Active scan denied for $targetUrl. Approve the target in the consent dialog or add it to Auto-Approved HTTP Targets."
+            }
+
             api.logging().logToOutput("MCP start_active_audit_for_request: starting focused audit for $targetUrl")
             api.scope().includeInScope(targetUrl)
 
@@ -420,10 +431,6 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             "Stops running active audits started via MCP. " +
             "With no auditId, stops all. With an auditId, stops only that audit."
         ) {
-            if (!config.allowActiveScanTooling) {
-                return@mcpTool activeScanDisabledMessage
-            }
-
             if (auditId != null) {
                 val message = auditRegistry.stopById(auditId)
                 if (message != null) {

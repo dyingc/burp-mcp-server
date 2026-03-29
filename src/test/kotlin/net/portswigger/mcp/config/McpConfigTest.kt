@@ -249,4 +249,5 @@ class McpConfigTest {
         assertTrue(config.requireHttpRequestApproval)
         verify { persistedObject.setBoolean("requireHttpRequestApproval", true) }
     }
+
 }

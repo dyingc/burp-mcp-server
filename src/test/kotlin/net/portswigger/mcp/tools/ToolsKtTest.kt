@@ -1004,8 +1004,6 @@ class ToolsKtTest {
             every { burpSuite.importUserOptionsFromJson(any()) } just runs
             every { api.scanner() } returns scanner
 
-            every { config.allowActiveScanTooling } returns true
-
             serverManager.stop {}
             serverStarted = false
             serverManager.start(config) { state ->
@@ -1052,18 +1050,6 @@ class ToolsKtTest {
                 delay(100)
                 val text = result.expectTextContent()
                 assertTrue(text.contains("not found"), "Should report not found for invalid ID")
-            }
-        }
-
-        @Test
-        fun `stop should be denied when active scan tooling disabled`() {
-            every { config.allowActiveScanTooling } returns false
-
-            runBlocking {
-                val result = client.callTool("stop_active_audit", emptyMap())
-                delay(100)
-                val text = result.expectTextContent()
-                assertTrue(text.contains("disabled"), "Should report disabled")
             }
         }
 
