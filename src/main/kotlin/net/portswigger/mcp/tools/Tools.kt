@@ -272,6 +272,8 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     }
 
     if (api.burpSuite().version().edition() == BurpSuiteEdition.PROFESSIONAL) {
+        val auditRegistry = ActiveAuditRegistry()
+
         mcpPaginatedTool<GetScannerIssues>("Displays information about issues identified by the scanner") {
             api.siteMap().issues().asSequence().map { Json.encodeToString(it.toSerializableForm()) }
         }
@@ -319,6 +321,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
 
         mcpTool<StartActiveAudit>(
             "Starts a Burp active scan (crawl + audit) for the target URL. " +
+            "Returns an auditId that can be used with stop_active_audit. " +
             "Use get_scanner_issues to retrieve findings."
         ) {
             if (!config.allowActiveScanTooling) {
@@ -346,8 +349,9 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             val pollIntervalMs = 2000L
             val maxIterations = scanDurationSeconds * 1000 / pollIntervalMs
 
-            Thread {
+            val pollingThread = Thread {
                 repeat(maxIterations.toInt()) {
+                    if (Thread.currentThread().isInterrupted) return@Thread
                     try {
                         Thread.sleep(pollIntervalMs)
                         addMatchingResponsesToAudit(
@@ -357,17 +361,25 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
                             seen = seen,
                             logging = api.logging(),
                         )
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return@Thread
                     } catch (_: Exception) {
                     }
                 }
                 api.logging().logToOutput("MCP start_active_audit: scan duration reached ($scanDurationSeconds seconds)")
-            }.apply { isDaemon = true }.start()
+            }.apply { isDaemon = true }
 
-            "Active scan started for $targetUrl. Use get_scanner_issues to retrieve findings."
+            val auditId = auditRegistry.register(crawl = crawl, audit = audit, pollingThread = pollingThread)
+            pollingThread.start()
+
+            api.logging().logToOutput("MCP start_active_audit: registered as $auditId")
+            "Active scan started for $targetUrl (auditId: $auditId). Use get_scanner_issues to retrieve findings. Use stop_active_audit to stop."
         }
 
         mcpTool<StartActiveAuditForRequest>(
             "Starts a focused Burp active audit for a specific HTTP request. " +
+            "Returns an auditId that can be used with stop_active_audit. " +
             "Use get_scanner_issues to retrieve findings."
         ) {
             if (!config.allowActiveScanTooling) {
@@ -399,7 +411,38 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
                 api.logging().logToOutput("MCP start_active_audit_for_request: injected request for $targetUrl")
             }
 
-            "Focused active audit started for $targetUrl. Use get_scanner_issues to retrieve findings."
+            val auditId = auditRegistry.register(audit = audit)
+            api.logging().logToOutput("MCP start_active_audit_for_request: registered as $auditId")
+            "Focused active audit started for $targetUrl (auditId: $auditId). Use get_scanner_issues to retrieve findings. Use stop_active_audit to stop."
+        }
+
+        mcpTool<StopActiveAudit>(
+            "Stops running active audits started via MCP. " +
+            "With no auditId, stops all. With an auditId, stops only that audit."
+        ) {
+            if (!config.allowActiveScanTooling) {
+                return@mcpTool activeScanDisabledMessage
+            }
+
+            if (auditId != null) {
+                val message = auditRegistry.stopById(auditId)
+                if (message != null) {
+                    api.logging().logToOutput("MCP stop_active_audit: $message")
+                    message
+                } else {
+                    api.logging().logToOutput("MCP stop_active_audit: $auditId not found")
+                    "Audit $auditId not found"
+                }
+            } else {
+                val result = auditRegistry.stopAll()
+                val message = if (result.failed > 0) {
+                    "Stopped ${result.total} audit(s); ${result.failed} failed: ${result.errors.joinToString(", ")}"
+                } else {
+                    "Stopped ${result.total} audit(s)"
+                }
+                api.logging().logToOutput("MCP stop_active_audit: $message")
+                message
+            }
         }
     }
 
@@ -611,4 +654,9 @@ data class StartActiveAuditForRequest(
     val targetUrl: String,
     val request: String,
     val response: String? = null
+)
+
+@Serializable
+data class StopActiveAudit(
+    val auditId: String? = null
 )

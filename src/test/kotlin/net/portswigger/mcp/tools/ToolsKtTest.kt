@@ -4,6 +4,8 @@ import burp.api.montoya.MontoyaApi
 import burp.api.montoya.burpsuite.TaskExecutionEngine
 import burp.api.montoya.collaborator.*
 import burp.api.montoya.core.BurpSuiteEdition
+import burp.api.montoya.scanner.AuditConfiguration
+import burp.api.montoya.scanner.CrawlConfiguration
 import burp.api.montoya.core.ByteArray
 import burp.api.montoya.http.Http
 import burp.api.montoya.http.HttpMode
@@ -981,6 +983,137 @@ class ToolsKtTest {
                 delay(100)
                 result.expectTextContent("No interactions detected")
             }
+        }
+    }
+
+    @Nested
+    inner class ActiveAuditToolsTests {
+        private val scanner = mockk<burp.api.montoya.scanner.Scanner>(relaxed = true)
+
+        @BeforeEach
+        fun setupProfessional() {
+            val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>()
+            val version = mockk<burp.api.montoya.core.Version>()
+            every { api.burpSuite() } returns burpSuite
+            every { burpSuite.version() } returns version
+            every { version.edition() } returns BurpSuiteEdition.PROFESSIONAL
+            every { burpSuite.taskExecutionEngine() } returns mockk(relaxed = true)
+            every { burpSuite.exportProjectOptionsAsJson() } returns "{}"
+            every { burpSuite.exportUserOptionsAsJson() } returns "{}"
+            every { burpSuite.importProjectOptionsFromJson(any()) } just runs
+            every { burpSuite.importUserOptionsFromJson(any()) } just runs
+            every { api.scanner() } returns scanner
+
+            every { config.allowActiveScanTooling } returns true
+
+            serverManager.stop {}
+            serverStarted = false
+            serverManager.start(config) { state ->
+                if (state is ServerState.Running) serverStarted = true
+            }
+
+            runBlocking {
+                var attempts = 0
+                while (!serverStarted && attempts < 30) {
+                    delay(100)
+                    attempts++
+                }
+                if (!serverStarted) throw IllegalStateException("Server failed to start after timeout")
+                client.connectToServer("http://127.0.0.1:${testPort}")
+            }
+        }
+
+        @Test
+        fun `stop_active_audit tool should be registered in professional edition`() {
+            runBlocking {
+                val tools = client.listTools()
+                assertTrue(tools.any { it.name == "stop_active_audit" })
+            }
+        }
+
+        @Test
+        fun `stop all audits should return count`() {
+            runBlocking {
+                val result = client.callTool("stop_active_audit", emptyMap())
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("0"), "Should report 0 stopped when none running")
+            }
+        }
+
+        @Test
+        fun `stop with invalid audit ID should return not found`() {
+            runBlocking {
+                val result = client.callTool(
+                    "stop_active_audit", mapOf(
+                        "auditId" to "audit-999"
+                    )
+                )
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("not found"), "Should report not found for invalid ID")
+            }
+        }
+
+        @Test
+        fun `stop should be denied when active scan tooling disabled`() {
+            every { config.allowActiveScanTooling } returns false
+
+            runBlocking {
+                val result = client.callTool("stop_active_audit", emptyMap())
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("disabled"), "Should report disabled")
+            }
+        }
+
+        @Test
+        fun `start then stop by ID should delete the task`() {
+            val mockCrawl = mockk<burp.api.montoya.scanner.Crawl>(relaxed = true)
+            val mockAudit = mockk<burp.api.montoya.scanner.audit.Audit>(relaxed = true)
+            val mockScope = mockk<burp.api.montoya.sitemap.SiteMap>(relaxed = true)
+            val mockScopeTarget = mockk<burp.api.montoya.scope.Scope>(relaxed = true)
+
+            every { scanner.startCrawl(any()) } returns mockCrawl
+            every { scanner.startAudit(any()) } returns mockAudit
+            every { api.siteMap() } returns mockScope
+            every { api.scope() } returns mockScopeTarget
+
+            mockkStatic(CrawlConfiguration::class)
+            mockkStatic(AuditConfiguration::class)
+            mockkStatic(HttpRequest::class)
+            every { CrawlConfiguration.crawlConfiguration(any<String>()) } returns mockk(relaxed = true)
+            every { AuditConfiguration.auditConfiguration(any()) } returns mockk(relaxed = true)
+            every { HttpRequest.httpRequestFromUrl(any<String>()) } returns mockk(relaxed = true)
+
+            runBlocking {
+                val startResult = client.callTool(
+                    "start_active_audit", mapOf(
+                        "targetUrl" to "https://example.com",
+                        "scanDurationSeconds" to 300
+                    )
+                )
+                delay(100)
+                val startText = startResult.expectTextContent()
+                assertTrue(startText.contains("auditId:"), "Should contain auditId")
+
+                val auditId = Regex("auditId: (audit-\\d+)").find(startText)!!.groupValues[1]
+
+                val stopResult = client.callTool(
+                    "stop_active_audit", mapOf(
+                        "auditId" to auditId
+                    )
+                )
+                delay(100)
+                val stopText = stopResult.expectTextContent()
+                assertTrue(stopText.contains("Stopped"), "Should confirm stopped")
+            }
+
+            verify { mockCrawl.delete() }
+            verify { mockAudit.delete() }
+
+            unmockkStatic(CrawlConfiguration::class)
+            unmockkStatic(AuditConfiguration::class)
         }
     }
 
