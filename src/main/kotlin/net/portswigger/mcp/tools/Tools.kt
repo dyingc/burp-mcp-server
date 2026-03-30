@@ -83,7 +83,6 @@ internal fun addMatchingResponsesToAudit(
 ) {
     requestResponses.forEach { requestResponse ->
         if (requestResponse.response() == null) {
-            logging.logToOutput("MCP start_active_audit: skipping site map item without response")
             return@forEach
         }
 

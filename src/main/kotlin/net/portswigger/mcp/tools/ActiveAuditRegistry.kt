@@ -27,35 +27,57 @@ class ActiveAuditRegistry {
         return id
     }
 
-    @Synchronized
     fun stopAll(): StopAllResult {
-        val snapshot = entries.toMap()
-        entries.clear()
+        val snapshot: Map<String, ActiveAuditEntry>
+        synchronized(this) {
+            snapshot = entries.toMap()
+            entries.clear()
+        }
         var failed = 0
         val errors = mutableListOf<String>()
         snapshot.forEach { (id, entry) ->
             try {
                 entry.pollingThread?.interrupt()
-                entry.crawl?.delete()
+            } catch (_: Exception) {}
+            try {
                 entry.audit.delete()
             } catch (e: Exception) {
                 failed++
-                errors.add("$id: ${e.message}")
+                errors.add("$id audit: ${e.message}")
+            }
+            try {
+                entry.crawl?.delete()
+            } catch (e: Exception) {
+                failed++
+                errors.add("$id crawl: ${e.message}")
             }
         }
         return StopAllResult(snapshot.size, failed, errors)
     }
 
-    @Synchronized
     fun stopById(id: String): String? {
-        val entry = entries.remove(id) ?: return null
-        return try {
+        val entry: ActiveAuditEntry
+        synchronized(this) {
+            entry = entries.remove(id) ?: return null
+        }
+        val errors = mutableListOf<String>()
+        try {
             entry.pollingThread?.interrupt()
-            entry.crawl?.delete()
+        } catch (_: Exception) {}
+        try {
             entry.audit.delete()
-            "Stopped audit $id"
         } catch (e: Exception) {
-            "Stopped audit $id but delete failed: ${e.message}"
+            errors.add("audit delete failed: ${e.message}")
+        }
+        try {
+            entry.crawl?.delete()
+        } catch (e: Exception) {
+            errors.add("crawl delete failed: ${e.message}")
+        }
+        return if (errors.isEmpty()) {
+            "Stopped audit $id"
+        } else {
+            "Stopped audit $id (${errors.joinToString("; ")})"
         }
     }
 
