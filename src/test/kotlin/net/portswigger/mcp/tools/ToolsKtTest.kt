@@ -129,6 +129,23 @@ class ToolsKtTest {
             }
         }
     }
+
+    private fun mockSiteMapRequestResponse(
+        url: String,
+        method: String = "GET",
+    ): burp.api.montoya.http.message.HttpRequestResponse {
+        val request = mockk<burp.api.montoya.http.message.requests.HttpRequest>()
+        every { request.url() } returns url
+        every { request.method() } returns method
+
+        val response = mockk<burp.api.montoya.http.message.responses.HttpResponse>()
+        every { response.toString() } returns "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nok"
+
+        return mockk {
+            every { request() } returns request
+            every { response() } returns response
+        }
+    }
     
     @BeforeEach
     fun setup() {
@@ -1097,6 +1114,65 @@ class ToolsKtTest {
 
             verify { mockCrawl.delete() }
             verify { mockAudit.delete() }
+
+            unmockkStatic(CrawlConfiguration::class)
+            unmockkStatic(AuditConfiguration::class)
+        }
+
+        @Test
+        fun `start_active_audit should only add site map items within target scheme host port and path scope`() {
+            val mockCrawl = mockk<burp.api.montoya.scanner.Crawl>(relaxed = true)
+            val mockAudit = mockk<burp.api.montoya.scanner.audit.Audit>(relaxed = true)
+            val mockSiteMap = mockk<burp.api.montoya.sitemap.SiteMap>(relaxed = true)
+            val mockScope = mockk<burp.api.montoya.scope.Scope>(relaxed = true)
+            val addedRequestResponses = mutableListOf<burp.api.montoya.http.message.HttpRequestResponse>()
+
+            every { scanner.startCrawl(any()) } returns mockCrawl
+            every { scanner.startAudit(any()) } returns mockAudit
+            every { api.siteMap() } returns mockSiteMap
+            every { api.scope() } returns mockScope
+            every { mockSiteMap.requestResponses() } returns listOf(
+                mockSiteMapRequestResponse("https://example.com/app"),
+                mockSiteMapRequestResponse("https://example.com/app/users"),
+                mockSiteMapRequestResponse("https://example.com/app2"),
+                mockSiteMapRequestResponse("https://example.com:8443/app/admin"),
+                mockSiteMapRequestResponse("http://example.com/app")
+            )
+            every { mockAudit.addRequestResponse(capture(addedRequestResponses)) } just runs
+
+            mockkStatic(CrawlConfiguration::class)
+            mockkStatic(AuditConfiguration::class)
+            every { CrawlConfiguration.crawlConfiguration(any<String>()) } returns mockk(relaxed = true)
+            every { AuditConfiguration.auditConfiguration(any()) } returns mockk(relaxed = true)
+            every { HttpRequest.httpRequestFromUrl(any<String>()) } returns mockk(relaxed = true)
+
+            runBlocking {
+                val startResult = client.callTool(
+                    "start_active_audit", mapOf(
+                        "targetUrl" to "https://example.com/app",
+                        "scanDurationSeconds" to 2
+                    )
+                )
+                delay(2400)
+                val startText = startResult.expectTextContent()
+                val auditId = Regex("auditId: (audit-\\d+)").find(startText)!!.groupValues[1]
+
+                val stopResult = client.callTool(
+                    "stop_active_audit", mapOf(
+                        "auditId" to auditId
+                    )
+                )
+                delay(100)
+                stopResult.expectTextContent()
+            }
+
+            assertEquals(
+                setOf(
+                    "https://example.com/app",
+                    "https://example.com/app/users",
+                ),
+                addedRequestResponses.map { it.request().url() }.toSet()
+            )
 
             unmockkStatic(CrawlConfiguration::class)
             unmockkStatic(AuditConfiguration::class)

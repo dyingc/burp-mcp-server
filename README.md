@@ -65,6 +65,7 @@ Upon successful loading, the MCP Server Extension will be active within Burp Sui
 Configuration for the extension is done through the Burp Suite UI in the `MCP` tab.
 - **Toggle the MCP Server**: The `Enabled` checkbox controls whether the MCP server is active.
 - **Enable config editing**: The `Enable tools that can edit your config` checkbox allows the MCP server to expose tools which can edit Burp configuration files.
+- **HTTP approval semantics**: Active audit tools reuse the existing HTTP request approval setting and auto-approved target list. If a host or host:port is already approved for HTTP requests, active audits for the same target will not prompt again.
 - **Advanced options**: You can configure the port and host for the MCP server. By default, it listens on `http://127.0.0.1:9876`.
 
 ### Claude Desktop Client

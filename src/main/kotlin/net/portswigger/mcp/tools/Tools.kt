@@ -36,6 +36,55 @@ private data class FocusedAuditTarget(
     val usesHttps: Boolean,
 )
 
+private fun normalizedPath(path: String?): String {
+    if (path.isNullOrBlank()) {
+        return "/"
+    }
+    return if (path.startsWith("/")) path else "/$path"
+}
+
+private fun resolvedPort(uri: java.net.URI): Int? {
+    if (uri.port != -1) {
+        return uri.port
+    }
+
+    return when (uri.scheme?.lowercase()) {
+        "https" -> 443
+        "http" -> 80
+        else -> null
+    }
+}
+
+private fun isPathWithinScope(requestPath: String?, targetPath: String?): Boolean {
+    val normalizedTargetPath = normalizedPath(targetPath).removeSuffix("/").ifEmpty { "/" }
+    if (normalizedTargetPath == "/") {
+        return true
+    }
+
+    val normalizedRequestPath = normalizedPath(requestPath).removeSuffix("/").ifEmpty { "/" }
+    return normalizedRequestPath == normalizedTargetPath || normalizedRequestPath.startsWith("$normalizedTargetPath/")
+}
+
+private fun matchesFocusedAuditTarget(requestUri: java.net.URI, target: FocusedAuditTarget): Boolean {
+    val requestScheme = requestUri.scheme?.lowercase() ?: return false
+    val targetScheme = target.uri.scheme?.lowercase() ?: return false
+    if (requestScheme != targetScheme) {
+        return false
+    }
+
+    val requestHost = requestUri.host ?: return false
+    if (!requestHost.equals(target.host, ignoreCase = true)) {
+        return false
+    }
+
+    val requestPort = resolvedPort(requestUri) ?: return false
+    if (requestPort != target.port) {
+        return false
+    }
+
+    return isPathWithinScope(requestUri.path, target.uri.path)
+}
+
 private fun parseFocusedAuditTarget(targetUrl: String): FocusedAuditTarget {
     val uri = java.net.URI(targetUrl)
     val scheme = uri.scheme?.lowercase() ?: throw IllegalArgumentException("targetUrl must include a scheme")
@@ -74,10 +123,10 @@ private fun validateFocusedAuditRequest(target: FocusedAuditTarget, request: Str
     }
 }
 
-internal fun addMatchingResponsesToAudit(
+private fun addMatchingResponsesToAudit(
     audit: Audit,
     requestResponses: List<HttpRequestResponse>,
-    targetHost: String,
+    target: FocusedAuditTarget,
     seen: MutableSet<String>,
     logging: Logging,
 ) {
@@ -92,7 +141,7 @@ internal fun addMatchingResponsesToAudit(
 
         try {
             val requestUri = java.net.URI(url)
-            if (requestUri.host.equals(targetHost, ignoreCase = true)) {
+            if (matchesFocusedAuditTarget(requestUri, target)) {
                 val dedupKey = "$method:$url"
                 if (seen.add(dedupKey)) {
                     audit.addRequestResponse(requestResponse)
@@ -270,7 +319,10 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     if (api.burpSuite().version().edition() == BurpSuiteEdition.PROFESSIONAL) {
         val auditRegistry = ActiveAuditRegistry()
 
-        mcpPaginatedTool<GetScannerIssues>("Displays information about issues identified by the scanner") {
+        mcpPaginatedTool<GetScannerIssues>(
+            "Displays information about issues identified by the scanner. " +
+            "Issue details include the request and response headers only; response bodies are omitted to reduce noise."
+        ) {
             api.siteMap().issues().asSequence().map { Json.encodeToString(it.toSerializableForm()) }
         }
 
@@ -334,8 +386,6 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             api.logging().logToOutput("MCP start_active_audit: starting active audit for $targetUrl")
             api.scope().includeInScope(targetUrl)
 
-            val targetHost = target.host
-
             val crawlConfig = CrawlConfiguration.crawlConfiguration(targetUrl)
             val crawl = api.scanner().startCrawl(crawlConfig)
             api.logging().logToOutput("MCP start_active_audit: crawl started for $targetUrl")
@@ -360,7 +410,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
                         addMatchingResponsesToAudit(
                             audit = audit,
                             requestResponses = api.siteMap().requestResponses(),
-                            targetHost = targetHost,
+                            target = target,
                             seen = seen,
                             logging = api.logging(),
                         )
