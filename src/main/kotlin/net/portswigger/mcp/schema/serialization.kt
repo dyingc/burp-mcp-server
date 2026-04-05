@@ -151,6 +151,15 @@ data class WebSocketMessage(
     val notes: String?
 )
 
+@Serializable
+data class CookieEntry(
+    val name: String,
+    val value: String,
+    val domain: String,
+    val path: String,
+    val expiration: String? = null
+)
+
 fun CollaboratorInteraction.toSerializableForm(): CollaboratorInteractionDetails {
     return CollaboratorInteractionDetails(
         id = id().toString(),

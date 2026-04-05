@@ -14,6 +14,8 @@ import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
+import burp.api.montoya.http.message.Cookie
+import burp.api.montoya.http.sessions.CookieJar
 import burp.api.montoya.proxy.Proxy
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import burp.api.montoya.utilities.Base64Utils
@@ -776,8 +778,235 @@ class ToolsKtTest {
                 assertEquals("Reached end of items", result3.expectTextContent())
             }
         }
+
+        @Test
+        fun `get proxy history should filter by host`() {
+            val proxy = mockk<Proxy>()
+            val req1 = mockk<burp.api.montoya.http.message.requests.HttpRequest>()
+            every { req1.headerValue("Host") } returns "target.net"
+            every { req1.method() } returns "GET"
+            every { req1.path() } returns "/page1"
+
+            val req2 = mockk<burp.api.montoya.http.message.requests.HttpRequest>()
+            every { req2.headerValue("Host") } returns "other.com"
+            every { req2.method() } returns "GET"
+            every { req2.path() } returns "/page2"
+
+            val entry1 = mockk<ProxyHttpRequestResponse>()
+            every { entry1.request() } returns req1
+            val entry2 = mockk<ProxyHttpRequestResponse>()
+            every { entry2.request() } returns req2
+
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns listOf(entry1, entry2)
+
+            mockkStatic("net.portswigger.mcp.schema.SerializationKt")
+            every { entry1.toSerializableForm() } returns HttpRequestResponse(
+                request = "GET /page1 HTTP/1.1\r\nHost: target.net",
+                response = "HTTP/1.1 200 OK",
+                notes = null
+            )
+            every { entry2.toSerializableForm() } returns HttpRequestResponse(
+                request = "GET /page2 HTTP/1.1\r\nHost: other.com",
+                response = "HTTP/1.1 200 OK",
+                notes = null
+            )
+
+            runBlocking {
+                val result = client.callTool(
+                    "get_proxy_http_history", mapOf(
+                        "count" to 10,
+                        "offset" to 0,
+                        "host" to "target.net"
+                    )
+                )
+
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("target.net"))
+                assertFalse(text.contains("other.com"))
+            }
+        }
+
+        @Test
+        fun `get proxy history should filter by method and pathPrefix`() {
+            val proxy = mockk<Proxy>()
+            val req1 = mockk<burp.api.montoya.http.message.requests.HttpRequest>()
+            every { req1.headerValue("Host") } returns "target.net"
+            every { req1.method() } returns "POST"
+            every { req1.path() } returns "/login"
+
+            val req2 = mockk<burp.api.montoya.http.message.requests.HttpRequest>()
+            every { req2.headerValue("Host") } returns "target.net"
+            every { req2.method() } returns "GET"
+            every { req2.path() } returns "/login"
+
+            val entry1 = mockk<ProxyHttpRequestResponse>()
+            every { entry1.request() } returns req1
+            val entry2 = mockk<ProxyHttpRequestResponse>()
+            every { entry2.request() } returns req2
+
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns listOf(entry1, entry2)
+
+            mockkStatic("net.portswigger.mcp.schema.SerializationKt")
+            every { entry1.toSerializableForm() } returns HttpRequestResponse(
+                request = "POST /login HTTP/1.1",
+                response = "HTTP/1.1 302 Found",
+                notes = null
+            )
+            every { entry2.toSerializableForm() } returns HttpRequestResponse(
+                request = "GET /login HTTP/1.1",
+                response = "HTTP/1.1 200 OK",
+                notes = null
+            )
+
+            runBlocking {
+                val result = client.callTool(
+                    "get_proxy_http_history", mapOf(
+                        "count" to 10,
+                        "offset" to 0,
+                        "method" to "POST",
+                        "pathPrefix" to "/login"
+                    )
+                )
+
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("POST /login"))
+                assertFalse(text.contains("GET /login"))
+            }
+        }
+
+        @Test
+        fun `get proxy history should reverse order`() {
+            val proxy = mockk<Proxy>()
+            val entries = (1..3).map { i ->
+                val req = mockk<burp.api.montoya.http.message.requests.HttpRequest>()
+                every { req.headerValue("Host") } returns "target.net"
+                every { req.method() } returns "GET"
+                every { req.path() } returns "/item$i"
+                mockk<ProxyHttpRequestResponse>().also {
+                    every { it.request() } returns req
+                }
+            }
+
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns entries
+
+            mockkStatic("net.portswigger.mcp.schema.SerializationKt")
+            entries.forEachIndexed { i, entry ->
+                every { entry.toSerializableForm() } returns HttpRequestResponse(
+                    request = "GET /item${i + 1} HTTP/1.1",
+                    response = "HTTP/1.1 200 OK",
+                    notes = null
+                )
+            }
+
+            runBlocking {
+                val result = client.callTool(
+                    "get_proxy_http_history", mapOf(
+                        "count" to 1,
+                        "offset" to 0,
+                        "reverse" to true
+                    )
+                )
+
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("GET /item3"))
+                assertFalse(text.contains("GET /item1"))
+            }
+        }
     }
-    
+
+    @Nested
+    inner class CookieJarToolsTests {
+        private fun mockCookie(
+            name: String,
+            value: String,
+            domain: String,
+            path: String = "/",
+            expiration: ZonedDateTime? = null
+        ): Cookie {
+            return mockk {
+                every { name() } returns name
+                every { value() } returns value
+                every { domain() } returns domain
+                every { path() } returns path
+                every { expiration() } returns Optional.ofNullable(expiration)
+            }
+        }
+
+        @Test
+        fun `get cookie jar should return all cookies when no domain specified`() {
+            val http = mockk<Http>()
+            val cookieJar = mockk<CookieJar>()
+            every { api.http() } returns http
+            every { http.cookieJar() } returns cookieJar
+            every { cookieJar.cookies() } returns listOf(
+                mockCookie("session", "abc123", "target.net"),
+                mockCookie("_lab", "xyz789", "other.com")
+            )
+
+            runBlocking {
+                val result = client.callTool("get_cookie_jar", emptyMap())
+
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("session"))
+                assertTrue(text.contains("abc123"))
+                assertTrue(text.contains("target.net"))
+                assertTrue(text.contains("_lab"))
+                assertTrue(text.contains("other.com"))
+            }
+        }
+
+        @Test
+        fun `get cookie jar should filter by domain`() {
+            val http = mockk<Http>()
+            val cookieJar = mockk<CookieJar>()
+            every { api.http() } returns http
+            every { http.cookieJar() } returns cookieJar
+            every { cookieJar.cookies() } returns listOf(
+                mockCookie("session", "abc123", "target.net"),
+                mockCookie("_lab", "xyz789", "other.com")
+            )
+
+            runBlocking {
+                val result = client.callTool(
+                    "get_cookie_jar", mapOf("domain" to "target.net")
+                )
+
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("session"))
+                assertTrue(text.contains("target.net"))
+                assertFalse(text.contains("other.com"))
+            }
+        }
+
+        @Test
+        fun `get cookie jar should return empty array when no cookies match`() {
+            val http = mockk<Http>()
+            val cookieJar = mockk<CookieJar>()
+            every { api.http() } returns http
+            every { http.cookieJar() } returns cookieJar
+            every { cookieJar.cookies() } returns listOf(
+                mockCookie("session", "abc123", "target.net")
+            )
+
+            runBlocking {
+                val result = client.callTool(
+                    "get_cookie_jar", mapOf("domain" to "nonexistent.com")
+                )
+
+                delay(100)
+                result.expectTextContent("[]")
+            }
+        }
+    }
+
     @Nested
     inner class CollaboratorToolsTests {
         private val collaborator = mockk<Collaborator>()

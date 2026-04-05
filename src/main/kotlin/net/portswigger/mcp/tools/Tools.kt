@@ -21,6 +21,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.schema.CookieEntry
 import net.portswigger.mcp.schema.toSerializableForm
 import net.portswigger.mcp.security.HistoryAccessSecurity
 import net.portswigger.mcp.security.HistoryAccessType
@@ -502,7 +503,37 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
         }
     }
 
-    mcpPaginatedTool<GetProxyHttpHistory>("Displays items within the proxy HTTP history") {
+    mcpTool<GetCookieJar>(
+        "Returns cookies from Burp's cookie jar, optionally filtered by domain. " +
+        "Useful for constructing authenticated requests for focused scans."
+    ) {
+        val allCookies = api.http().cookieJar().cookies()
+
+        val filtered = if (domain != null) {
+            allCookies.filter { it.domain().contains(domain, ignoreCase = true) }
+        } else {
+            allCookies
+        }
+
+        if (filtered.isEmpty()) {
+            "[]"
+        } else {
+            Json.encodeToString(filtered.map { cookie ->
+                CookieEntry(
+                    name = cookie.name(),
+                    value = cookie.value(),
+                    domain = cookie.domain(),
+                    path = cookie.path(),
+                    expiration = cookie.expiration().orElse(null)?.toString()
+                )
+            })
+        }
+    }
+
+    mcpPaginatedTool<GetProxyHttpHistory>(
+        "Displays items within the proxy HTTP history. " +
+        "Optionally filter by host, method, pathPrefix. Use reverse=true to get newest first."
+    ) {
         val allowed = runBlocking {
             checkHistoryPermissionOrDeny(HistoryAccessType.HTTP_HISTORY, config, api, "HTTP history")
         }
@@ -510,7 +541,28 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             return@mcpPaginatedTool sequenceOf("HTTP history access denied by Burp Suite")
         }
 
-        api.proxy().history().asSequence().map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
+        var items: List<burp.api.montoya.proxy.ProxyHttpRequestResponse> = api.proxy().history()
+
+        if (host != null) {
+            items = items.filter { entry ->
+                entry.request()?.headerValue("Host")
+                    ?.contains(host, ignoreCase = true) == true
+            }
+        }
+        if (method != null) {
+            items = items.filter { entry ->
+                entry.request()?.method()?.equals(method, ignoreCase = true) == true
+            }
+        }
+        if (pathPrefix != null) {
+            items = items.filter { entry ->
+                entry.request()?.path()?.startsWith(pathPrefix) == true
+            }
+        }
+
+        val ordered = if (reverse == true) items.reversed() else items
+
+        ordered.asSequence().map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
     }
 
     mcpPaginatedTool<GetProxyHttpHistoryRegex>("Displays items matching a specified regex within the proxy HTTP history") {
@@ -677,7 +729,19 @@ data class SetActiveEditorContents(val text: String)
 data class GetScannerIssues(override val count: Int, override val offset: Int) : Paginated
 
 @Serializable
-data class GetProxyHttpHistory(override val count: Int, override val offset: Int) : Paginated
+data class GetCookieJar(
+    val domain: String? = null
+)
+
+@Serializable
+data class GetProxyHttpHistory(
+    override val count: Int,
+    override val offset: Int,
+    val host: String? = null,
+    val method: String? = null,
+    val pathPrefix: String? = null,
+    val reverse: Boolean? = null
+) : Paginated
 
 @Serializable
 data class GetProxyHttpHistoryRegex(val regex: String, override val count: Int, override val offset: Int) : Paginated
