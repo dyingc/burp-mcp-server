@@ -523,7 +523,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
                     name = cookie.name(),
                     value = cookie.value(),
                     domain = cookie.domain(),
-                    path = cookie.path(),
+                    path = cookie.path() as String?,
                     expiration = cookie.expiration().orElse(null)?.toString()
                 )
             })
