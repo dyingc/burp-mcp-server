@@ -1349,6 +1349,49 @@ class ToolsKtTest {
         }
 
         @Test
+        fun `start active audit for request should allow host mismatch when targetUrl defines the service`() {
+            val mockScope = mockk<burp.api.montoya.scope.Scope>(relaxed = true)
+            val mockAudit = mockk<burp.api.montoya.scanner.audit.Audit>(relaxed = true)
+            val mockAuditConfig = mockk<burp.api.montoya.scanner.AuditConfiguration>()
+            val mockRequest = mockk<HttpRequest>()
+
+            every { api.scope() } returns mockScope
+
+            mockkStatic(AuditConfiguration::class)
+            every {
+                AuditConfiguration.auditConfiguration(
+                    burp.api.montoya.scanner.BuiltInAuditConfiguration.LEGACY_ACTIVE_AUDIT_CHECKS
+                )
+            } returns mockAuditConfig
+            every { scanner.startAudit(mockAuditConfig) } returns mockAudit
+            every {
+                HttpRequest.httpRequest(any<burp.api.montoya.http.HttpService>(), any<String>())
+            } returns mockRequest
+
+            runBlocking {
+                val result = client.callTool(
+                    "start_active_audit_for_request", mapOf(
+                        "targetUrl" to "https://example.com/login",
+                        "request" to "POST /login HTTP/1.1\r\nHost: other.example\r\n\r\nusername=a"
+                    )
+                )
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("Focused active audit started"), "Expected success but got: $text")
+                assertFalse(text.contains("Error"), "Unexpected error: $text")
+            }
+
+            verify(exactly = 1) { mockScope.includeInScope("https://example.com/login") }
+            verify(exactly = 1) {
+                burp.api.montoya.http.HttpService.httpService("example.com", 443, true)
+            }
+            verify(exactly = 1) { scanner.startAudit(mockAuditConfig) }
+            verify(exactly = 1) { mockAudit.addRequest(mockRequest) }
+
+            unmockkStatic(AuditConfiguration::class)
+        }
+
+        @Test
         fun `start_active_audit should only add site map items within target scheme host port and path scope`() {
             val mockCrawl = mockk<burp.api.montoya.scanner.Crawl>(relaxed = true)
             val mockAudit = mockk<burp.api.montoya.scanner.audit.Audit>(relaxed = true)

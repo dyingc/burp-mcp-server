@@ -108,20 +108,6 @@ private fun validateFocusedAuditRequest(target: FocusedAuditTarget, request: Str
     if (lines.isEmpty() || lines.first().isBlank()) {
         throw IllegalArgumentException("request must include a request line")
     }
-
-    val hostHeader = lines
-        .drop(1)
-        .takeWhile { it.isNotEmpty() }
-        .firstOrNull { it.startsWith("Host:", ignoreCase = true) }
-        ?.substringAfter(':')
-        ?.trim()
-
-    if (hostHeader != null) {
-        val requestHost = hostHeader.substringBefore(':').trim()
-        if (!requestHost.equals(target.host, ignoreCase = true)) {
-            throw IllegalArgumentException("request host must match targetUrl host")
-        }
-    }
 }
 
 private fun addMatchingResponsesToAudit(
