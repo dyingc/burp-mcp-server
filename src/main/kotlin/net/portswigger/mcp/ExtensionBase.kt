@@ -16,7 +16,7 @@ class ExtensionBase : BurpExtension {
         api.extension().setName("Burp MCP Server")
 
         val config = McpConfig(api.persistence().extensionData(), api.logging())
-        val loggerBuffer = LoggerHistoryBuffer()
+        val loggerBuffer = LoggerHistoryBuffer(api = api)
         api.http().registerHttpHandler(loggerBuffer)
         val serverManager = KtorServerManager(api, loggerBuffer)
 
