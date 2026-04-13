@@ -1323,7 +1323,6 @@ class ToolsKtTest {
                 val startResult = client.callTool(
                     "start_active_audit", mapOf(
                         "targetUrl" to "https://example.com",
-                        "scanDurationSeconds" to 300
                     )
                 )
                 delay(100)
@@ -1423,7 +1422,6 @@ class ToolsKtTest {
                 val startResult = client.callTool(
                     "start_active_audit", mapOf(
                         "targetUrl" to "https://example.com/app",
-                        "scanDurationSeconds" to 2
                     )
                 )
                 delay(2400)

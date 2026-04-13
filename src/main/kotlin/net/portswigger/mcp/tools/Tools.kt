@@ -418,11 +418,9 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig, loggerBuffer: Logge
 
             val seen = mutableSetOf<String>()
             val pollIntervalMs = 2000L
-            val maxIterations = scanDurationSeconds * 1000 / pollIntervalMs
 
             val pollingThread = Thread {
-                repeat(maxIterations.toInt()) {
-                    if (Thread.currentThread().isInterrupted) return@Thread
+                while (!Thread.currentThread().isInterrupted) {
                     try {
                         Thread.sleep(pollIntervalMs)
                         addMatchingResponsesToAudit(
@@ -439,7 +437,6 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig, loggerBuffer: Logge
                         api.logging().logToOutput("MCP start_active_audit: polling error: ${e.message}")
                     }
                 }
-                api.logging().logToOutput("MCP start_active_audit: scan duration reached ($scanDurationSeconds seconds)")
             }.apply { isDaemon = true }
 
             val auditId = auditRegistry.register(crawl = crawl, audit = audit, pollingThread = pollingThread)
@@ -852,8 +849,7 @@ data class GetCollaboratorInteractions(
 
 @Serializable
 data class StartActiveAudit(
-    val targetUrl: String,
-    val scanDurationSeconds: Int = 300
+    val targetUrl: String
 )
 
 @Serializable
