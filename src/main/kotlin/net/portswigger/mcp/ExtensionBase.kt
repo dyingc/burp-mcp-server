@@ -4,6 +4,7 @@ import burp.api.montoya.BurpExtension
 import burp.api.montoya.MontoyaApi
 import net.portswigger.mcp.config.ConfigUi
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.logger.LoggerHistoryBuffer
 import net.portswigger.mcp.providers.ClaudeDesktopProvider
 import net.portswigger.mcp.providers.ManualProxyInstallerProvider
 import net.portswigger.mcp.providers.ProxyJarManager
@@ -15,7 +16,9 @@ class ExtensionBase : BurpExtension {
         api.extension().setName("Burp MCP Server")
 
         val config = McpConfig(api.persistence().extensionData(), api.logging())
-        val serverManager = KtorServerManager(api)
+        val loggerBuffer = LoggerHistoryBuffer()
+        api.http().registerHttpHandler(loggerBuffer)
+        val serverManager = KtorServerManager(api, loggerBuffer)
 
         val proxyJarManager = ProxyJarManager(api.logging())
 

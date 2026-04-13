@@ -5,6 +5,7 @@ import burp.api.montoya.burpsuite.TaskExecutionEngine.TaskExecutionEngineState.P
 import burp.api.montoya.burpsuite.TaskExecutionEngine.TaskExecutionEngineState.RUNNING
 import burp.api.montoya.collaborator.InteractionFilter
 import burp.api.montoya.core.BurpSuiteEdition
+import burp.api.montoya.core.ToolType
 import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpService
 import burp.api.montoya.http.message.HttpHeader
@@ -21,7 +22,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.logger.LoggerHistoryBuffer
+import net.portswigger.mcp.logger.LoggerEntry
 import net.portswigger.mcp.schema.CookieEntry
+import net.portswigger.mcp.schema.LoggerHistoryEntry
 import net.portswigger.mcp.schema.toSerializableForm
 import net.portswigger.mcp.security.HistoryAccessSecurity
 import net.portswigger.mcp.security.HistoryAccessType
@@ -161,7 +165,34 @@ private fun truncateIfNeeded(serialized: String): String {
     }
 }
 
-fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
+private fun LoggerEntry.toSerializableForm(): LoggerHistoryEntry {
+    return LoggerHistoryEntry(
+        time = time.toString(),
+        toolSource = toolType.name,
+        host = host,
+        port = port,
+        secure = secure,
+        method = method,
+        path = path,
+        statusCode = statusCode,
+        hasResponse = hasResponse,
+        request = request,
+        response = response
+    )
+}
+
+private fun parseToolTypes(tools: List<String>): Set<ToolType>? {
+    if (tools.isEmpty()) return null
+    return tools.mapNotNull { name ->
+        try {
+            ToolType.valueOf(name.uppercase())
+        } catch (_: IllegalArgumentException) {
+            null
+        }
+    }.toSet()
+}
+
+fun Server.registerTools(api: MontoyaApi, config: McpConfig, loggerBuffer: LoggerHistoryBuffer) {
 
     mcpTool<SendHttp1Request>("Issues an HTTP/1.1 request and returns the response.") {
         val allowed = runBlocking {
@@ -589,6 +620,76 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             .map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
     }
 
+    mcpPaginatedTool<GetLoggerHttpHistory>(
+        "Displays items from Burp's Logger HTTP history, which captures traffic from all Burp tools " +
+        "(Proxy, Scanner, Repeater, Intruder, Extensions, etc.). " +
+        "Results are ordered newest-first by default. Set reverse=false for chronological order. " +
+        "Use the tools filter to isolate traffic by originating tool (e.g. EXTENSIONS, SCANNER, PROXY)."
+    ) {
+        val allowed = runBlocking {
+            checkHistoryPermissionOrDeny(HistoryAccessType.LOGGER_HTTP_HISTORY, config, api, "Logger HTTP history")
+        }
+        if (!allowed) {
+            return@mcpPaginatedTool sequenceOf("Logger HTTP history access denied by Burp Suite")
+        }
+
+        val toolTypes = tools?.let { parseToolTypes(it) }
+        var items = loggerBuffer.snapshot()
+
+        if (toolTypes != null) {
+            items = items.filter { it.toolType in toolTypes }
+        }
+        if (host != null) {
+            items = items.filter { it.host?.contains(host, ignoreCase = true) == true }
+        }
+        if (method != null) {
+            items = items.filter { it.method?.equals(method, ignoreCase = true) == true }
+        }
+        if (pathPrefix != null) {
+            items = items.filter { it.path?.startsWith(pathPrefix) == true }
+        }
+        if (statusCode != null) {
+            items = items.filter { it.statusCode == statusCode }
+        }
+        if (statusCodePrefix != null) {
+            items = items.filter { entry ->
+                entry.statusCode != null && entry.statusCode.toString().startsWith(statusCodePrefix.toString())
+            }
+        }
+        if (hasResponse != null) {
+            items = items.filter { it.hasResponse == hasResponse }
+        }
+
+        val ordered = if (reverse != false) items.reversed() else items
+
+        ordered.asSequence().map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
+    }
+
+    mcpPaginatedTool<GetLoggerHttpHistoryRegex>(
+        "Displays items matching a specified regex within Burp's Logger HTTP history. " +
+        "Searches both request and response text. " +
+        "Results are ordered newest-first by default. Set reverse=false for chronological order."
+    ) {
+        val allowed = runBlocking {
+            checkHistoryPermissionOrDeny(HistoryAccessType.LOGGER_HTTP_HISTORY, config, api, "Logger HTTP history")
+        }
+        if (!allowed) {
+            return@mcpPaginatedTool sequenceOf("Logger HTTP history access denied by Burp Suite")
+        }
+
+        val compiledRegex = Pattern.compile(regex)
+        val toolTypes = tools?.let { parseToolTypes(it) }
+        var items = loggerBuffer.search(compiledRegex)
+
+        if (toolTypes != null) {
+            items = items.filter { it.toolType in toolTypes }
+        }
+
+        val ordered = if (reverse != false) items.reversed() else items
+
+        ordered.asSequence().map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
+    }
+
     mcpTool<SetTaskExecutionEngineState>("Sets the state of Burp's task execution engine (paused or unpaused)") {
         api.burpSuite().taskExecutionEngine().state = if (running) RUNNING else PAUSED
 
@@ -766,3 +867,26 @@ data class StartActiveAuditForRequest(
 data class StopActiveAudit(
     val auditId: String? = null
 )
+
+@Serializable
+data class GetLoggerHttpHistory(
+    override val count: Int,
+    override val offset: Int,
+    val tools: List<String>? = null,
+    val host: String? = null,
+    val method: String? = null,
+    val pathPrefix: String? = null,
+    val statusCode: Int? = null,
+    val statusCodePrefix: Int? = null,
+    val hasResponse: Boolean? = null,
+    val reverse: Boolean? = null
+) : Paginated
+
+@Serializable
+data class GetLoggerHttpHistoryRegex(
+    val regex: String,
+    override val count: Int,
+    override val offset: Int,
+    val tools: List<String>? = null,
+    val reverse: Boolean? = null
+) : Paginated

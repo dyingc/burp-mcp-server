@@ -36,6 +36,7 @@ import net.portswigger.mcp.KtorServerManager
 import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.TestSseMcpClient
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.logger.LoggerHistoryBuffer
 import net.portswigger.mcp.schema.HttpRequestResponse
 import net.portswigger.mcp.schema.toSerializableForm
 import org.junit.jupiter.api.AfterEach
@@ -50,7 +51,7 @@ class ToolsKtTest {
     
     private val client = TestSseMcpClient()
     private val api = mockk<MontoyaApi>(relaxed = true)
-    private val serverManager = KtorServerManager(api)
+    private val serverManager = KtorServerManager(api, LoggerHistoryBuffer())
     private val testPort = findAvailablePort()
     private var serverStarted = false
     private val config: McpConfig

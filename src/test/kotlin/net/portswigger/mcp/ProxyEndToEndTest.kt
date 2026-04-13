@@ -9,6 +9,7 @@ import io.modelcontextprotocol.kotlin.sdk.TextContent
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.logger.LoggerHistoryBuffer
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
@@ -32,7 +33,7 @@ class ProxyEndToEndTest {
     private val logger = LoggerFactory.getLogger(ProxyEndToEndTest::class.java)
 
     private val api = mockk<MontoyaApi>(relaxed = true)
-    private val serverManager = KtorServerManager(api)
+    private val serverManager = KtorServerManager(api, LoggerHistoryBuffer())
     private val testPort = findAvailablePort()
     private val persistedObject = mockk<PersistedObject>()
 

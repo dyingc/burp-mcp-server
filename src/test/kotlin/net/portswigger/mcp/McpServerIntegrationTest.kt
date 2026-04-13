@@ -8,6 +8,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.logger.LoggerHistoryBuffer
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
@@ -17,7 +18,7 @@ import java.net.ServerSocket
 class McpServerIntegrationTest {
     private val client = TestSseMcpClient()
     private val api = mockk<MontoyaApi>(relaxed = true)
-    private val serverManager = KtorServerManager(api)
+    private val serverManager = KtorServerManager(api, LoggerHistoryBuffer())
     private val testPort = findAvailablePort()
     private val persistedObject = mockk<PersistedObject>()
     private var serverStarted = false

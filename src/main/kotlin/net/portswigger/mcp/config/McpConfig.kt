@@ -36,6 +36,16 @@ class McpConfig(storage: PersistedObject, private val logging: Logging) {
             }
         }
 
+    private var _alwaysAllowLoggerHistory by storage.boolean(false)
+    var alwaysAllowLoggerHistory: Boolean
+        get() = _alwaysAllowLoggerHistory
+        set(value) {
+            if (_alwaysAllowLoggerHistory != value) {
+                _alwaysAllowLoggerHistory = value
+                notifyHistoryAccessChanged()
+            }
+        }
+
     private var _autoApproveTargets by storage.stringList("")
     private val targetsChangeListeners = CopyOnWriteArrayList<ListenerRegistration>()
     private val historyAccessChangeListeners = CopyOnWriteArrayList<ListenerRegistration>()

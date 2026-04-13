@@ -160,6 +160,21 @@ data class CookieEntry(
     val expiration: String? = null
 )
 
+@Serializable
+data class LoggerHistoryEntry(
+    val time: String,
+    val toolSource: String,
+    val host: String?,
+    val port: Int,
+    val secure: Boolean,
+    val method: String?,
+    val path: String?,
+    val statusCode: Int?,
+    val hasResponse: Boolean,
+    val request: String?,
+    val response: String?
+)
+
 fun CollaboratorInteraction.toSerializableForm(): CollaboratorInteractionDetails {
     return CollaboratorInteractionDetails(
         id = id().toString(),

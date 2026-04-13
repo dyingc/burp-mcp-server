@@ -7,7 +7,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
 enum class HistoryAccessType() {
-    HTTP_HISTORY(), WEBSOCKET_HISTORY();
+    HTTP_HISTORY(), WEBSOCKET_HISTORY(), LOGGER_HTTP_HISTORY();
 }
 
 interface HistoryAccessApprovalHandler {
@@ -23,6 +23,7 @@ class SwingHistoryAccessApprovalHandler : HistoryAccessApprovalHandler {
                 val historyTypeName = when (accessType) {
                     HistoryAccessType.HTTP_HISTORY -> "HTTP history"
                     HistoryAccessType.WEBSOCKET_HISTORY -> "WebSocket history"
+                    HistoryAccessType.LOGGER_HTTP_HISTORY -> "Logger HTTP history"
                 }
 
                 val message = buildString {
@@ -51,6 +52,7 @@ class SwingHistoryAccessApprovalHandler : HistoryAccessApprovalHandler {
                         when (accessType) {
                             HistoryAccessType.HTTP_HISTORY -> config.alwaysAllowHttpHistory = true
                             HistoryAccessType.WEBSOCKET_HISTORY -> config.alwaysAllowWebSocketHistory = true
+                            HistoryAccessType.LOGGER_HTTP_HISTORY -> config.alwaysAllowLoggerHistory = true
                         }
                         continuation.resume(true)
                     }
@@ -78,6 +80,7 @@ object HistoryAccessSecurity {
         val isAlwaysAllowed = when (accessType) {
             HistoryAccessType.HTTP_HISTORY -> config.alwaysAllowHttpHistory
             HistoryAccessType.WEBSOCKET_HISTORY -> config.alwaysAllowWebSocketHistory
+            HistoryAccessType.LOGGER_HTTP_HISTORY -> config.alwaysAllowLoggerHistory
         }
 
         if (isAlwaysAllowed) {
